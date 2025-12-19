@@ -1,36 +1,36 @@
-# main.py
-import os
 import torch
 import pandas as pd
+import numpy as np
 
 from utils.data import load_time_series_dataloaders
-from utils.train import train_model, evaluate, regression_metrics
-
-from models.mlp import BaselineMLP
-from models.lstm import LSTMPredictor
-from models.transformer import TimeSeriesTransformer, HybridTransformer
-# Assuming you have these plot functions
-# from utils.plots import plot_loss_curves, plot_true_vs_pred, plot_scatter
+from utils.train import train_model, evaluate, regression_metrics, retrain_on_train_val
+from models.mlp import ImprovedMLP
+from models.lstm import ImprovedLSTM
+from models.transformer import TimeSeriesTransformer
 
 
 # ======================
-# Configuration
+# Ayarlar
 # ======================
 CSV_PATH = "dc_extended.csv"
 WINDOW_SIZE = 90
 BATCH_SIZE = 64
-LR = 1e-3
-WEIGHT_DECAY = 1e-5
-EPOCHS = 150
-PATIENCE = 20
+EPOCHS = 200
+PATIENCE = 30
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-print(f"Using device: {DEVICE}")
+print(f"Device: {DEVICE}")
+print("="*70)
+print("BITCOIN FİYAT TAHMİNİ PROJESİ")
+print("="*70)
+
 
 # ======================
-# Load Data
+# VERİ YÜKLEME
 # ======================
-print("\n=== Loading Data ===")
+print("\n1. VERİ YÜKLEME")
+print("-" * 70)
+
 data = load_time_series_dataloaders(
     csv_path=CSV_PATH,
     target_col="close_USD",
@@ -41,238 +41,180 @@ data = load_time_series_dataloaders(
 train_loader = data["train_loader"]
 val_loader = data["val_loader"]
 test_loader = data["test_loader"]
-target_scaler = data["target_scaler"]  # IMPORTANT!
+target_scaler = data["target_scaler"]
 seq_len = data["seq_len"]
 num_features = data["num_features"]
 
-print(f"Sequence length: {seq_len}")
-print(f"Number of features: {num_features}")
-print(f"Train samples: {len(train_loader.dataset)}")
-print(f"Val samples: {len(val_loader.dataset)}")
-print(f"Test samples: {len(test_loader.dataset)}")
+print(f"✓ Pencere boyutu: {seq_len} gün")
+print(f"✓ Feature sayısı: {num_features}")
+print(f"✓ Train: {len(train_loader.dataset)} örnek")
+print(f"✓ Val:   {len(val_loader.dataset)} örnek")
+print(f"✓ Test:  {len(test_loader.dataset)} örnek")
 
 
 # ======================
-# 1. Baseline MLP
+# MODEL TANIMLARI
 # ======================
-print("\n" + "="*60)
-print("=== Training Baseline MLP ===")
-print("="*60)
-mlp = BaselineMLP(seq_len, num_features)
+print("\n2. MODEL TANIMLARI")
+print("-" * 70)
 
-mlp, mlp_tr, mlp_val = train_model(
-    mlp,
-    train_loader,
-    val_loader,
-    epochs=EPOCHS,
-    lr=LR,
-    weight_decay=WEIGHT_DECAY,
-    patience=PATIENCE,
-    name="mlp",
-    device=DEVICE,
-)
+model_configs = {
+    "MLP": {
+        "class": ImprovedMLP,
+        "kwargs": {"seq_len": seq_len, "num_features": num_features, "dropout": 0.3},
+        "lr": 1e-3,
+        "weight_decay": 1e-5,
+        "description": "4-layer MLP with BatchNorm"
+    },
 
-mlp_test_loss, mlp_pred_scaled, mlp_true_scaled = evaluate(
-    mlp, test_loader, torch.nn.MSELoss(), DEVICE
-)
+    "LSTM": {
+        "class": ImprovedLSTM,
+        "kwargs": {"num_features": num_features, "hidden_size": 128,
+                   "num_layers": 3, "dropout": 0.3},
+        "lr": 1e-3,
+        "weight_decay": 1e-5,
+        "description": "Bidirectional LSTM (3 layers) + Attention"
+    },
 
-# INVERSE TRANSFORM to original scale
-mlp_pred = target_scaler.inverse_transform(mlp_pred_scaled.reshape(-1, 1)).flatten()
-mlp_true = target_scaler.inverse_transform(mlp_true_scaled.reshape(-1, 1)).flatten()
-
-mlp_mse, mlp_rmse, mlp_mae, mlp_mape, mlp_r2 = regression_metrics(mlp_true, mlp_pred)
-print(f"\nMLP Results:")
-print(f"  RMSE: ${mlp_rmse:,.2f}")
-print(f"  MAE:  ${mlp_mae:,.2f}")
-print(f"  MAPE: {mlp_mape:.2f}%")
-print(f"  R²:   {mlp_r2:.4f}")
-
-
-# ======================
-# 2. LSTM Model
-# ======================
-print("\n" + "="*60)
-print("=== Training LSTM Model ===")
-print("="*60)
-lstm = LSTMPredictor(num_features=num_features, hidden_size=128, num_layers=2)
-
-lstm, lstm_tr, lstm_val = train_model(
-    lstm,
-    train_loader,
-    val_loader,
-    epochs=EPOCHS,
-    lr=LR,
-    weight_decay=WEIGHT_DECAY,
-    patience=PATIENCE,
-    name="lstm",
-    device=DEVICE,
-)
-
-lstm_test_loss, lstm_pred_scaled, lstm_true_scaled = evaluate(
-    lstm, test_loader, torch.nn.MSELoss(), DEVICE
-)
-
-# INVERSE TRANSFORM
-lstm_pred = target_scaler.inverse_transform(lstm_pred_scaled.reshape(-1, 1)).flatten()
-lstm_true = target_scaler.inverse_transform(lstm_true_scaled.reshape(-1, 1)).flatten()
-
-lstm_mse, lstm_rmse, lstm_mae, lstm_mape, lstm_r2 = regression_metrics(lstm_true, lstm_pred)
-print(f"\nLSTM Results:")
-print(f"  RMSE: ${lstm_rmse:,.2f}")
-print(f"  MAE:  ${lstm_mae:,.2f}")
-print(f"  MAPE: {lstm_mape:.2f}%")
-print(f"  R²:   {lstm_r2:.4f}")
-
-
-# ======================
-# 3. Transformer Model (Lightweight)
-# ======================
-print("\n" + "="*60)
-print("=== Training Transformer Model (Lightweight) ===")
-print("="*60)
-transformer = TimeSeriesTransformer(
-    num_features=num_features,
-    d_model=64,     # Smaller model for small dataset
-    nhead=4,
-    num_layers=2,
-    dim_feedforward=256,
-    dropout=0.2
-)
-
-transformer, trf_tr, trf_val = train_model(
-    transformer,
-    train_loader,
-    val_loader,
-    epochs=EPOCHS,
-    lr=LR,
-    weight_decay=WEIGHT_DECAY,
-    patience=PATIENCE,
-    name="transformer",
-    device=DEVICE,
-)
-
-trf_test_loss, trf_pred_scaled, trf_true_scaled = evaluate(
-    transformer, test_loader, torch.nn.MSELoss(), DEVICE
-)
-
-# INVERSE TRANSFORM
-trf_pred = target_scaler.inverse_transform(trf_pred_scaled.reshape(-1, 1)).flatten()
-trf_true = target_scaler.inverse_transform(trf_true_scaled.reshape(-1, 1)).flatten()
-
-trf_mse, trf_rmse, trf_mae, trf_mape, trf_r2 = regression_metrics(trf_true, trf_pred)
-print(f"\nTransformer Results:")
-print(f"  RMSE: ${trf_rmse:,.2f}")
-print(f"  MAE:  ${trf_mae:,.2f}")
-print(f"  MAPE: {trf_mape:.2f}%")
-print(f"  R²:   {trf_r2:.4f}")
-
-
-# ======================
-# 4. Hybrid Transformer-LSTM Model
-# ======================
-print("\n" + "="*60)
-print("=== Training Hybrid Transformer-LSTM Model ===")
-print("="*60)
-hybrid = HybridTransformer(
-    num_features=num_features,
-    d_model=64,
-    nhead=4,
-    num_layers=1,  # Reduced
-    lstm_hidden=64,
-    dropout=0.4  # Increased
-)
-
-hybrid, hyb_tr, hyb_val = train_model(
-    hybrid,
-    train_loader,
-    val_loader,
-    epochs=EPOCHS,
-    lr=LR,
-    weight_decay=WEIGHT_DECAY,
-    patience=PATIENCE,
-    name="hybrid",
-    device=DEVICE,
-)
-
-hyb_test_loss, hyb_pred_scaled, hyb_true_scaled = evaluate(
-    hybrid, test_loader, torch.nn.MSELoss(), DEVICE
-)
-
-# INVERSE TRANSFORM
-hyb_pred = target_scaler.inverse_transform(hyb_pred_scaled.reshape(-1, 1)).flatten()
-hyb_true = target_scaler.inverse_transform(hyb_true_scaled.reshape(-1, 1)).flatten()
-
-hyb_mse, hyb_rmse, hyb_mae, hyb_mape, hyb_r2 = regression_metrics(hyb_true, hyb_pred)
-print(f"\nHybrid Results:")
-print(f"  RMSE: ${hyb_rmse:,.2f}")
-print(f"  MAE:  ${hyb_mae:,.2f}")
-print(f"  MAPE: {hyb_mape:.2f}%")
-print(f"  R²:   {hyb_r2:.4f}")
-
-
-# ======================
-# Summary Table
-# ======================
-print("\n" + "="*60)
-print("=== FINAL MODEL COMPARISON ===")
-print("="*60)
-print(f"{'Model':<20} {'RMSE ($)':<15} {'MAE ($)':<15} {'MAPE (%)':<12} {'R²':<10}")
-print("-" * 72)
-print(f"{'MLP':<20} {mlp_rmse:>13,.2f}  {mlp_mae:>13,.2f}  {mlp_mape:>10.2f}  {mlp_r2:>8.4f}")
-print(f"{'LSTM':<20} {lstm_rmse:>13,.2f}  {lstm_mae:>13,.2f}  {lstm_mape:>10.2f}  {lstm_r2:>8.4f}")
-print(f"{'Transformer':<20} {trf_rmse:>13,.2f}  {trf_mae:>13,.2f}  {trf_mape:>10.2f}  {trf_r2:>8.4f}")
-print(f"{'Hybrid Trans-LSTM':<20} {hyb_rmse:>13,.2f}  {hyb_mae:>13,.2f}  {hyb_mape:>10.2f}  {hyb_r2:>8.4f}")
-
-
-# ======================
-# Save Results
-# ======================
-results = {
-    'MODEL': ['MLP', 'LSTM', 'Transformer', 'Hybrid'],
-    'RMSE': [mlp_rmse, lstm_rmse, trf_rmse, hyb_rmse],
-    'MAE': [mlp_mae, lstm_mae, trf_mae, hyb_mae],
-    'MAPE': [mlp_mape, lstm_mape, trf_mape, hyb_mape],
-    'R2': [mlp_r2, lstm_r2, trf_r2, hyb_r2]
+    "Transformer": {
+        "class": TimeSeriesTransformer,
+        "kwargs": {"num_features": num_features, "d_model": 64, "nhead": 4,
+                   "num_layers": 2, "dim_feedforward": 256, "dropout": 0.3},
+        "lr": 1e-3,
+        "weight_decay": 1e-5,
+        "description": "CNN + Transformer Encoder (2 layers)"
+    },
 }
 
-results_df = pd.DataFrame(results)
-results_df.to_csv('results_table.csv', index=False)
-print("\n✓ Results saved to results_table.csv")
+for name, config in model_configs.items():
+    print(f"✓ {name}: {config['description']}")
 
-# Find best model
+
+# ======================
+# MODEL EĞİTİMİ
+# ======================
+print("\n3. MODEL EĞİTİMİ")
+print("="*70)
+
+all_results = []
+
+for model_name, config in model_configs.items():
+    print(f"\n{'='*70}")
+    print(f"MODEL: {model_name}")
+    print(f"{'='*70}")
+
+    # PHASE 1: Train ve Validation ile eğitim
+    print(f"\n[PHASE 1] Train ve Val ile eğitim başlıyor...")
+
+    model = config["class"](**config["kwargs"])
+
+    model_trained, train_losses, val_losses, best_epoch = train_model(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=EPOCHS,
+        lr=config["lr"],
+        weight_decay=config["weight_decay"],
+        patience=PATIENCE,
+        name=f"{model_name.lower()}_phase1",
+        device=DEVICE,
+        scheduler_type="plateau",
+        return_best_epoch=True,
+    )
+
+    # PHASE 2: Train + Val birleştir ve retrain
+    retrain_epochs = int(best_epoch * 1.5)
+    retrain_epochs = max(retrain_epochs, 30)
+    retrain_epochs = min(retrain_epochs, 100)
+
+    print(f"\n[PHASE 2] Train+Val birleştiriliyor ve retrain yapılıyor...")
+
+    model_final = config["class"](**config["kwargs"])
+
+    model_final = retrain_on_train_val(
+        model=model_final,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=retrain_epochs,
+        lr=config["lr"],
+        weight_decay=config["weight_decay"],
+        name=f"{model_name.lower()}_final",
+        device=DEVICE,
+    )
+
+    # PHASE 3: Test seti ile tahmin
+    print(f"\n[PHASE 3] Test tahminleri yapılıyor...")
+
+    test_loss, pred_scaled, true_scaled = evaluate(
+        model_final, test_loader, torch.nn.MSELoss(), DEVICE
+    )
+
+    pred = target_scaler.inverse_transform(pred_scaled.reshape(-1, 1)).flatten()
+    true = target_scaler.inverse_transform(true_scaled.reshape(-1, 1)).flatten()
+
+    mse, rmse, mae, mape, r2 = regression_metrics(true, pred)
+
+    print(f"\n{model_name} SONUÇLARI")
+    print(f"  RMSE:        ${rmse:>12,.2f}")
+    print(f"  MAE:         ${mae:>12,.2f}")
+    print(f"  MAPE:        {mape:>11.2f}%")
+    print(f"  R²:          {r2:>12.4f}")
+
+    all_results.append({
+        "MODEL": model_name,
+        "RMSE": rmse,
+        "MAE": mae,
+        "MAPE": mape,
+        "R2": r2,
+        "best_epoch": best_epoch,
+        "retrain_epochs": retrain_epochs,
+        "predictions": (true, pred),
+    })
+
+
+# ======================
+# KARŞILAŞTIRMA
+# ======================
+print("\n" + "="*70)
+print("4. TÜM MODELLERİN KARŞILAŞTIRILMASI")
+print("="*70)
+print(f"\n{'Model':<15} {'RMSE ($)':<15} {'MAE ($)':<15} {'MAPE (%)':<12} {'R²':<10}")
+print("-" * 70)
+
+for res in all_results:
+    print(f"{res['MODEL']:<15} {res['RMSE']:>13,.2f}  "
+          f"{res['MAE']:>13,.2f}  {res['MAPE']:>10.2f}  {res['R2']:>8.4f}")
+
+results_df = pd.DataFrame([{
+    "MODEL": r["MODEL"],
+    "RMSE": r["RMSE"],
+    "MAE": r["MAE"],
+    "MAPE": r["MAPE"],
+    "R2": r["R2"]
+} for r in all_results])
+
 best_idx = results_df['RMSE'].idxmin()
-best_model_name = results_df.loc[best_idx, 'MODEL']
+best_model = results_df.loc[best_idx, 'MODEL']
 best_rmse = results_df.loc[best_idx, 'RMSE']
-print(f"\n✓ Best model: {best_model_name} (RMSE: ${best_rmse:,.2f})")
+best_r2 = results_df.loc[best_idx, 'R2']
 
-# Uncomment if you have plotting functions
-# ======================
-# Plots
-# ======================
-# os.makedirs("plots", exist_ok=True)
-#
-# plot_loss_curves(
-#     mlp_tr, mlp_val,
-#     lstm_tr, lstm_val,
-#     trf_tr, trf_val,
-#     out_dir="plots"
-# )
-#
-# # Plot best model (LSTM typically)
-# plot_true_vs_pred(
-#     lstm_true,
-#     lstm_pred,
-#     title="LSTM – True vs Predicted (Test)",
-#     out_path="plots/lstm_true_vs_pred.png"
-# )
-#
-# plot_scatter(
-#     lstm_true,
-#     lstm_pred,
-#     title="LSTM – True vs Predicted Scatter (Test)",
-#     out_path="plots/lstm_scatter.png"
-# )
+print(f"\n🏆 EN İYİ MODEL: {best_model}")
+print(f"   RMSE: ${best_rmse:,.2f}")
+print(f"   R²:   {best_r2:.4f}")
 
-print("\n" + "="*60)
-print("Training complete!")
-print("="*60)
+
+# ======================
+# SONUÇLARI KAYDET
+# ======================
+print("\n5. SONUÇLARI KAYDET")
+results_df.to_csv('model_comparison.csv', index=False)
+
+best_result = all_results[best_idx]
+pred_df = pd.DataFrame({
+    'True_Price': best_result['predictions'][0],
+    'Predicted_Price': best_result['predictions'][1],
+    'Error': best_result['predictions'][1] - best_result['predictions'][0]
+})
+pred_df.to_csv(f'{best_model.lower()}_predictions.csv', index=False)
+
+print("\nPROJE TAMAMLANDI!")
